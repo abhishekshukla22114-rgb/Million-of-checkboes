@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>1 Million Checkboxes</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: Inter, "Segoe UI", sans-serif;
+            background: #090d18;
+            color: #f4f6ff;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 32px 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            background:
+                radial-gradient(ellipse at 50% 0%, rgb(86 101 230 / 22%), transparent 55%),
+                linear-gradient(145deg, #090d18, #11182a 55%, #0a1020);
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0 0 8px;
+            font-size: clamp(1.8rem, 4vw, 2.8rem);
+            font-weight: 750;
+            letter-spacing: -0.04em;
+        }
+
+        .stats-badge {
+            font-size: 0.95rem;
+            color: #a4b3d6;
+            background: rgb(255 255 255 / 6%);
+            padding: 6px 14px;
+            border-radius: 999px;
+            border: 1px solid rgb(255 255 255 / 10%);
+            display: inline-block;
+        }
+
+        #server-alert {
+            width: min(100%, 760px);
+            margin: 0 0 16px;
+            padding: 12px 16px;
+            color: #ffd5d8;
+            background: rgb(137 39 57 / 24%);
+            border: 1px solid rgb(255 119 138 / 48%);
+            border-radius: 12px;
+            font-size: 0.9rem;
+        }
+
+        #server-alert[hidden] {
+            display: none;
+        }
+
+        /* Virtual Scroller Viewport */
+        #viewport {
+            position: relative;
+            width: min(100%, 760px);
+            height: 680px;
+            overflow-y: auto;
+            background: rgb(22 30 49 / 82%);
+            border: 1px solid rgb(151 166 211 / 16%);
+            border-radius: 20px;
+            box-shadow: 0 28px 80px rgb(0 0 0 / 40%);
+            backdrop-filter: blur(14px);
+        }
+
+        /* Phantom spacer giving the scrollbar its full 1M height */
+        #phantom-spacer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            pointer-events: none;
+        }
+
+        /* Actual render grid holding only currently visible checkboxes */
+        #render-grid {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            display: grid;
+            grid-template-columns: repeat(10, 1fr);
+            gap: 12px;
+            padding: 24px;
+        }
+
+        /* Checkbox Appearance */
+        #render-grid input[type="checkbox"] {
+            appearance: none;
+            width: 100%;
+            aspect-ratio: 1;
+            margin: 0;
+            background: #202a40;
+            border: 1px solid #35425c;
+            border-radius: 10px;
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            transition: background-color 140ms ease, border-color 140ms ease, transform 120ms ease;
+        }
+
+        #render-grid input[type="checkbox"]::before {
+            content: "";
+            width: 30%;
+            height: 55%;
+            border-right: 2.5px solid #fff;
+            border-bottom: 2.5px solid #fff;
+            opacity: 0;
+            transform: translateY(-10%) rotate(45deg) scale(0.6);
+            transition: opacity 120ms ease, transform 120ms ease;
+        }
+
+        #render-grid input[type="checkbox"]:hover {
+            background: #293653;
+            border-color: #8290ff;
+            transform: scale(1.05);
+        }
+
+        #render-grid input[type="checkbox"]:checked {
+            background: linear-gradient(145deg, #7986ff, #5364e8);
+            border-color: #8d99ff;
+            box-shadow: 0 4px 14px rgb(83 100 232 / 38%);
+        }
+
+        #render-grid input[type="checkbox"]:checked::before {
+            opacity: 1;
+            transform: translateY(-10%) rotate(45deg) scale(1);
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>1,000,000 Checkboxes</h1>
+        <div class="stats-badge" id="stats">Connecting to cluster...</div>
+    </header>
+
+    <div id="server-alert" role="alert" hidden></div>
+
+    <div id="viewport">
+        <div id="phantom-spacer"></div>
+        <div id="render-grid"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const TOTAL_CHECKBOXES = 1_000_000;
+        const COLUMNS = 10;
+        const TOTAL_ROWS = TOTAL_CHECKBOXES / COLUMNS; // 100,000 rows
+        const ROW_HEIGHT = 58; // Checkbox size + row gap in px
+        const BUFFER_ROWS = 6;
+
+        const viewport = document.getElementById('viewport');
+        const spacer = document.getElementById('phantom-spacer');
+        const grid = document.getElementById('render-grid');
+        const statsEl = document.getElementById('stats');
+        const serverAlert = document.getElementById('server-alert');
+
+        // Total scrollable virtual height = 100,000 rows * 58px = 5,800,000px
+        spacer.style.height = `${TOTAL_ROWS * ROW_HEIGHT}px`;
+
+        // 122KB binary state in RAM
+        let bitfield = new Uint8Array(Math.ceil(TOTAL_CHECKBOXES / 8));
+        let isReady = false;
+
+        // Redis big-endian bitwise helpers
+        function getBit(index) {
+            const byteIndex = Math.floor(index / 8);
+            const bitOffset = 7 - (index % 8);
+            return ((bitfield[byteIndex] >> bitOffset) & 1) === 1;
+        }
+
+        function setBit(index, value) {
+            const byteIndex = Math.floor(index / 8);
+            const bitOffset = 7 - (index % 8);
+            if (value) {
+                bitfield[byteIndex] |= (1 << bitOffset);
+            } else {
+                bitfield[byteIndex] &= ~(1 << bitOffset);
+            }
+        }
+
+        // --- Virtual Scroll Engine ---
+        let currentStartRow = -1;
+        let currentEndRow = -1;
+
+        function renderVisible() {
+            if (!isReady) return;
+
+            const scrollTop = viewport.scrollTop;
+            const viewportHeight = viewport.clientHeight;
+
+            const startRow = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER_ROWS);
+            const endRow = Math.min(TOTAL_ROWS, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + BUFFER_ROWS);
+
+            if (startRow === currentStartRow && endRow === currentEndRow) return;
+            currentStartRow = startRow;
+            currentEndRow = endRow;
+
+            // Offset current slice to correct scroll position
+            grid.style.transform = `translateY(${startRow * ROW_HEIGHT}px)`;
+
+            const startIndex = startRow * COLUMNS;
+            const endIndex = endRow * COLUMNS;
+
+            const fragment = document.createDocumentFragment();
+            for (let i = startIndex; i < endIndex; i++) {
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.dataset.index = i;
+                box.checked = getBit(i);
+                fragment.appendChild(box);
+            }
+
+            grid.replaceChildren(fragment);
+        }
+
+        let scrollTick = false;
+        viewport.addEventListener('scroll', () => {
+            if (!scrollTick) {
+                requestAnimationFrame(() => {
+                    renderVisible();
+                    scrollTick = false;
+                });
+                scrollTick = true;
+            }
+        }, { passive: true });
+
+        // Event delegation: single click handler
+        grid.addEventListener('change', (e) => {
+            if (e.target.tagName !== 'INPUT') return;
+
+            const index = Number(e.target.dataset.index);
+            const checked = e.target.checked;
+
+            setBit(index, checked);
+
+            if (socket) {
+                socket.emit('client:checkbox:change', { index, checked });
+            }
+        });
+
+        // --- Socket.IO Sync ---
+        const socket = typeof io === 'function' ? io() : null;
+
+        if (socket) {
+            socket.on('server:error', (data) => {
+                serverAlert.textContent = data.message || 'Action rejected by server.';
+                serverAlert.hidden = false;
+                setTimeout(() => { serverAlert.hidden = true; }, 3500);
+            });
+
+            socket.on('server:checkboxes:batch', (updates) => {
+                for (let i = 0; i < updates.length; i++) {
+                    const { index, checked } = updates[i];
+                    setBit(index, checked);
+
+                    const el = grid.querySelector(`input[data-index="${index}"]`);
+                    if (el) {
+                        el.checked = checked;
+                    }
+                }
+            });
+        }
+
+        // --- Fetch binary state on load ---
+        async function init() {
+            try {
+                const res = await fetch('/checkboxes/binary');
+                const buffer = await res.arrayBuffer();
+                bitfield = new Uint8Array(buffer);
+                isReady = true;
+
+                statsEl.textContent = 'Live • 1,000,000 Checkboxes';
+                renderVisible();
+            } catch (err) {
+                console.error('Binary payload failed to load:', err);
+                statsEl.textContent = 'Failed to load binary state';
+            }
+        }
+
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
