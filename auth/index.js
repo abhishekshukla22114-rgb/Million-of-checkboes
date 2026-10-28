@@ -53,6 +53,14 @@ export async function findUserByEmail(email) {
   return result.rows[0];
 }
 
+export async function findUserByUsername(username) {
+  const result = await query(
+    'SELECT id FROM users WHERE username = $1',
+    [username.trim()]
+  );
+  return result.rows[0];
+}
+
 export async function findUserById(id) {
   const result = await query(
     'SELECT id, email, username, created_at FROM users WHERE id = $1',

@@ -10,6 +10,7 @@ import authRoutes from './auth/routes.js';
 import checkboxRoutes from './routes/checkboxes.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { authMiddleware } from './auth/middleware.js';
+import { verifyAccessToken } from './auth/index.js';
 
 const TOTAL_CHECKBOXES = Number(process.env.TOTAL_CHECKBOXES) || 1_000_000;
 const CHECKBOX_BITMAP_KEY = process.env.CHECKBOX_BITMAP_KEY || 'checkboxes:bitmap:v1';
@@ -134,7 +135,10 @@ async function main() {
   io.use(async (socket, next) => {
     const token = socket.handshake.auth.token || socket.handshake.query.token;
     if (token) {
-      socket.userToken = token;
+      const decoded = verifyAccessToken(token);
+      if (decoded) {
+        socket.userId = decoded.userId;
+      }
     }
     next();
   });

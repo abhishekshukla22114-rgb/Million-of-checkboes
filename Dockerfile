@@ -1,56 +1,46 @@
-# Multi-stage build for production
+# Base Node image
 FROM node:22-alpine AS base
-
-# Install dependencies only when needed
-FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
-# Install dependencies based on the preferred package manager
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable pnpm && pnpm install --frozen-lockfile
-
-# Rebuild the source code only when needed
-FROM base AS builder
+# Dependencies stage
+FROM base AS deps
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY package.json pnpm-lock.yaml* package-lock.json* ./
+# pnpm aur npm dono fallback support
+RUN if [ -f pnpm-lock.yaml ]; then \
+  corepack enable pnpm && pnpm install --frozen-lockfile; \
+  else \
+  npm install; \
+  fi
 
-# Generate Prisma client if needed (not using Prisma, but keeping for future)
-# RUN npx prisma generate
-
-# Production image, copy all the files and run the app
+# Runner stage (Single clean stage for production)
 FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Create a non-root user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+# Security: Non-root user setup
+RUN addgroup --system --gid 1001 nodejs && \
+  adduser --system --uid 1001 appuser
 
-# Copy built application
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/index.js ./index.js
-COPY --from=builder /app/config ./config
-COPY --from=builder /app/auth ./auth
-COPY --from=builder /app/routes ./routes
-COPY --from=builder /app/middleware ./middleware
-COPY --from=builder /app/redis-connection.js ./redis-connection.js
+# Dependencies copy
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json ./
 
-# Change ownership to non-root user
-RUN chown -R nextjs:nodejs /app
-USER nextjs
+# Source files copy (.dockerignore host ke node_modules ko aane se rokega)
+COPY . .
 
-EXPOSE 5000
+# Ownership setup
+RUN chown -R appuser:nodejs /app
+USER appuser
 
-ENV PORT=5000
-ENV HOSTNAME="0.0.0.0"
+# Port environment variable render dashboard se lega, fallback 8000
+ENV PORT=8000
+EXPOSE ${PORT}
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
 CMD ["node", "index.js"]

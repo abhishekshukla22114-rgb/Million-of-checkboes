@@ -51,6 +51,96 @@
             display: inline-block;
         }
 
+        #auth-panel {
+            width: min(100%, 760px);
+            margin: 0 0 16px;
+            padding: 18px 20px;
+            background: rgb(22 30 49 / 82%);
+            border: 1px solid rgb(151 166 211 / 16%);
+            border-radius: 16px;
+        }
+
+        #auth-heading {
+            margin: 0 0 14px;
+            font-size: 1.1rem;
+        }
+
+        #auth-form {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            align-items: end;
+            gap: 12px;
+        }
+
+        #auth-form label {
+            display: grid;
+            gap: 6px;
+            color: #a4b3d6;
+            font-size: 0.85rem;
+        }
+
+        #auth-form input,
+        .auth-button {
+            min-height: 42px;
+            padding: 9px 12px;
+            color: #f4f6ff;
+            background: #151e32;
+            border: 1px solid #35425c;
+            border-radius: 9px;
+            font: inherit;
+        }
+
+        .auth-button {
+            cursor: pointer;
+            font-weight: 650;
+            background: #5364e8;
+            border-color: #7986ff;
+        }
+
+        .auth-button:hover {
+            background: #6474f1;
+        }
+
+        .auth-button:disabled {
+            cursor: wait;
+            opacity: 0.7;
+        }
+
+        #auth-toggle {
+            margin-left: 8px;
+            padding: 6px 0;
+            color: #aab4ff;
+            background: none;
+            border: 0;
+            cursor: pointer;
+            font: inherit;
+        }
+
+        #auth-message {
+            margin: 12px 0 0;
+            color: #c3cbea;
+            font-size: 0.9rem;
+        }
+
+        #auth-form[hidden],
+        #auth-toggle[hidden],
+        #auth-message[hidden],
+        #username-field[hidden],
+        #account-view[hidden] {
+            display: none;
+        }
+
+        #account-view {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        #account-name {
+            color: #c3cbea;
+        }
+
         #server-alert {
             width: min(100%, 760px);
             margin: 0 0 16px;
@@ -151,6 +241,31 @@
         <div class="stats-badge" id="stats">Connecting to cluster...</div>
     </header>
 
+    <section id="auth-panel" aria-labelledby="auth-heading">
+        <h2 id="auth-heading">Sign in to your account</h2>
+        <form id="auth-form">
+            <label id="username-field" hidden>
+                Username
+                <input id="auth-username" name="username" type="text" autocomplete="username" minlength="3" maxlength="30" pattern="[A-Za-z0-9]+" />
+            </label>
+            <label>
+                Email
+                <input id="auth-email" name="email" type="email" autocomplete="email" maxlength="255" required />
+            </label>
+            <label>
+                Password
+                <input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="128" required />
+            </label>
+            <button class="auth-button" id="auth-submit" type="submit">Sign in</button>
+        </form>
+        <button id="auth-toggle" type="button">Create an account</button>
+        <p id="auth-message" role="status" aria-live="polite" hidden></p>
+        <div id="account-view" hidden>
+            <span id="account-name"></span>
+            <button class="auth-button" id="auth-logout" type="button">Sign out</button>
+        </div>
+    </section>
+
     <div id="server-alert" role="alert" hidden></div>
 
     <div id="viewport">
@@ -171,6 +286,18 @@
         const grid = document.getElementById('render-grid');
         const statsEl = document.getElementById('stats');
         const serverAlert = document.getElementById('server-alert');
+        const authForm = document.getElementById('auth-form');
+        const authHeading = document.getElementById('auth-heading');
+        const authSubmit = document.getElementById('auth-submit');
+        const authToggle = document.getElementById('auth-toggle');
+        const authMessage = document.getElementById('auth-message');
+        const usernameField = document.getElementById('username-field');
+        const usernameInput = document.getElementById('auth-username');
+        const accountView = document.getElementById('account-view');
+        const accountName = document.getElementById('account-name');
+        let authMode = 'login';
+        let accessToken = sessionStorage.getItem('accessToken');
+        let refreshToken = sessionStorage.getItem('refreshToken');
 
         // Total scrollable virtual height = 100,000 rows * 58px = 5,800,000px
         spacer.style.height = `${TOTAL_ROWS * ROW_HEIGHT}px`;
@@ -257,7 +384,9 @@
         });
 
         // --- Socket.IO Sync ---
-        const socket = typeof io === 'function' ? io() : null;
+        const socket = typeof io === 'function'
+            ? io({ auth: { token: accessToken } })
+            : null;
 
         if (socket) {
             socket.on('server:error', (data) => {
@@ -279,6 +408,162 @@
             });
         }
 
+        function showAuthMessage(message) {
+            authMessage.textContent = message;
+            authMessage.hidden = !message;
+        }
+
+        function updateAuthView(user) {
+            const signedIn = Boolean(user);
+            authForm.hidden = signedIn;
+            authToggle.hidden = signedIn;
+            accountView.hidden = !signedIn;
+            authHeading.textContent = signedIn ? 'Your account' : authMode === 'login'
+                ? 'Sign in to your account'
+                : 'Create your account';
+            if (signedIn) {
+                accountName.textContent = `Signed in as ${user.username} (${user.email})`;
+            }
+        }
+
+        function setAuthTokens(tokens) {
+            accessToken = tokens.accessToken;
+            refreshToken = tokens.refreshToken;
+            sessionStorage.setItem('accessToken', accessToken);
+            sessionStorage.setItem('refreshToken', refreshToken);
+            if (socket) {
+                socket.auth = { token: accessToken };
+                socket.disconnect().connect();
+            }
+        }
+
+        function clearAuthTokens() {
+            accessToken = null;
+            refreshToken = null;
+            sessionStorage.removeItem('accessToken');
+            sessionStorage.removeItem('refreshToken');
+            if (socket) {
+                socket.auth = {};
+                socket.disconnect().connect();
+            }
+            updateAuthView(null);
+        }
+
+        async function authRequest(path, options = {}) {
+            const response = await fetch(`/api/auth/${path}`, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(options.headers || {}),
+                },
+            });
+            let result;
+            try {
+                result = await response.json();
+            } catch {
+                throw new Error('The server returned an invalid response.');
+            }
+            if (!response.ok) {
+                const error = new Error(result.error || 'Authentication request failed.');
+                error.status = response.status;
+                throw error;
+            }
+            return result;
+        }
+
+        function setAuthMode(mode) {
+            authMode = mode;
+            const registering = mode === 'register';
+            usernameField.hidden = !registering;
+            usernameInput.required = registering;
+            document.getElementById('auth-password').autocomplete = registering
+                ? 'new-password'
+                : 'current-password';
+            document.getElementById('auth-password').minLength = registering ? 8 : 0;
+            authSubmit.textContent = registering ? 'Create account' : 'Sign in';
+            authToggle.textContent = registering ? 'Already have an account? Sign in' : 'Create an account';
+            updateAuthView(null);
+            showAuthMessage('');
+        }
+
+        authToggle.addEventListener('click', () => {
+            setAuthMode(authMode === 'login' ? 'register' : 'login');
+        });
+
+        authForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            showAuthMessage('');
+            authSubmit.disabled = true;
+            const formData = new FormData(authForm);
+            const credentials = {
+                email: formData.get('email'),
+                password: formData.get('password'),
+            };
+            if (authMode === 'register') {
+                credentials.username = formData.get('username');
+            }
+
+            try {
+                const result = await authRequest(authMode, {
+                    method: 'POST',
+                    body: JSON.stringify(credentials),
+                });
+                setAuthTokens(result);
+                updateAuthView(result.user);
+            } catch (error) {
+                showAuthMessage(error.message);
+            } finally {
+                authSubmit.disabled = false;
+            }
+        });
+
+        document.getElementById('auth-logout').addEventListener('click', async () => {
+            const tokenToRevoke = refreshToken;
+            clearAuthTokens();
+            try {
+                if (tokenToRevoke) {
+                    await authRequest('logout', {
+                        method: 'POST',
+                        body: JSON.stringify({ refreshToken: tokenToRevoke }),
+                    });
+                }
+                showAuthMessage('You have signed out.');
+            } catch (error) {
+                showAuthMessage(`Signed out on this device, but the session could not be revoked: ${error.message}`);
+            }
+        });
+
+        async function restoreSession() {
+            if (!accessToken && !refreshToken) return;
+
+            try {
+                let result;
+                try {
+                    result = await authRequest('me', {
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                    });
+                } catch (error) {
+                    if (error.status !== 401 || !refreshToken) throw error;
+                    const refreshed = await authRequest('refresh', {
+                        method: 'POST',
+                        body: JSON.stringify({ refreshToken }),
+                    });
+                    setAuthTokens(refreshed);
+                    result = await authRequest('me', {
+                        headers: { Authorization: `Bearer ${accessToken}` },
+                    });
+                }
+                updateAuthView(result.user);
+            } catch (error) {
+                if (error.status === 401) {
+                    clearAuthTokens();
+                    showAuthMessage('Your session expired. Please sign in again.');
+                } else {
+                    showAuthMessage(error.message);
+                }
+            }
+        }
+
         // --- Fetch binary state on load ---
         async function init() {
             try {
@@ -295,7 +580,10 @@
             }
         }
 
-        window.addEventListener('load', init);
+        window.addEventListener('load', () => {
+            init();
+            restoreSession();
+        });
     </script>
 </body>
 </html>

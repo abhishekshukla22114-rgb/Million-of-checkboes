@@ -3,6 +3,8 @@ import Joi from 'joi';
 import {
   createUser,
   findUserByEmail,
+  findUserByUsername,
+  findUserById,
   verifyPassword,
   generateAccessToken,
   generateRefreshToken,
@@ -44,6 +46,11 @@ router.post('/register', async (req, res) => {
       return res.status(409).json({ error: 'Email already registered' });
     }
 
+    const existingUsername = await findUserByUsername(username);
+    if (existingUsername) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
     const user = await createUser(email, username, password);
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
@@ -56,6 +63,9 @@ router.post('/register', async (req, res) => {
     });
   } catch (err) {
     console.error('Registration error:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'Email or username already registered' });
+    }
     res.status(500).json({ error: 'Registration failed' });
   }
 });
